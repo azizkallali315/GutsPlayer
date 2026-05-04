@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no" />
+  <title>GutsPlayer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;800&family=Playfair+Display:ital,wght@1,900&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #050505;
+      --panel: rgba(20, 20, 20, 0.75);
+      --card: rgba(30, 30, 35, 0.6);
+      --acc: #e94560;
+      --acc-glow: rgba(233, 69, 96, 0.5);
+      --text: #ffffff;
+      --sub: #a0a0b0;
+      --muted: #505060;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      background-image: radial-gradient(circle at top right, rgba(233, 69, 96, 0.15), transparent 40%),
+                        radial-gradient(circle at bottom left, rgba(40, 20, 60, 0.2), transparent 40%);
+      color: var(--text);
+      font-family: 'Outfit', sans-serif;
+      overflow: hidden;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    #root { height: 100%; display: flex; flex-direction: column; }
+
+    @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes scaleIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+    .glass {
+      background: var(--panel);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .btn-press { transition: transform 0.2s, opacity 0.2s; cursor: pointer; }
+    .btn-press:active { transform: scale(0.94); }
+    .btn-press:hover { opacity: 0.9; }
+
+    input::placeholder { color: var(--muted); }
+    ::-webkit-scrollbar { width: 0; height: 0; }
+
+    .now-playing-bg {
+      position: absolute; inset: 0; background-size: cover; background-position: center;
+      filter: blur(50px) brightness(0.4); z-index: -1; transition: background-image 0.8s ease;
+    }
+    
+    .tab-btn {
+      padding: 8px 16px; border-radius: 20px; font-weight: 600; font-size: 14px;
+      transition: all 0.3s; cursor: pointer; border: none; outline: none;
+    }
+    
+    .checkbox {
+      width: 24px; height: 24px; border-radius: 6px; border: 2px solid var(--sub);
+      display: flex; align-items: center; justify-content: center; transition: all 0.2s;
+    }
+    .checkbox.checked { background: var(--acc); border-color: var(--acc); }
+
+    /* Custom range slider */
+    input[type=range] {
+      -webkit-appearance: none; width: 100%; background: transparent;
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; height: 16px; width: 16px; border-radius: 50%;
+      background: #fff; cursor: pointer; margin-top: -6px; box-shadow: 0 0 10px rgba(255,255,255,0.5);
+    }
+    input[type=range]::-webkit-slider-runnable-track {
+      width: 100%; height: 4px; cursor: pointer; background: rgba(255,255,255,0.2); border-radius: 2px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsmediatags/3.9.5/jsmediatags.min.js"></script>
+  <script type="text/babel">
+    const { useState, useRef, useEffect, useCallback, useMemo } = React;
+
+    /* ── CONSTANTS ── */
+    const DB_NAME = "gutsplayer_db";
+    const FLASK_API_URL = "http://localhost:5000"; // Update with actual API if needed
+    const YT_INSTANCES = ["https://pipedapi.kavin.rocks"];
+
+    const C = {
+      bg: "#050505", panel: "rgba(20,20,20,0.75)", card: "rgba(30,30,35,0.6)",
+      acc: "#e94560", text: "#fff", sub: "#a0a0b0", muted: "#505060"
+    };
+
+    /* ── DATABASE LAYER (IndexedDB) ── */
+    const STORE_SONGS = "songs";
+    const STORE_PLAYLISTS = "playlists";
+
+    const initDB = () => new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, 2);
+      req.onupgradeneeded = e => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(STORE_SONGS)) db.createObjectStore(STORE_SONGS, { keyPath: "id" });
+        if (!db.objectStoreNames.contains(STORE_PLAYLISTS)) db.createObjectStore(STORE_PLAYLISTS, { keyPath: "id" });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+
+    const dbOp = async (store, mode, op) => {
+      const db = await initDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(store, mode);
+        const s = tx.objectStore(store);
+        const req = op(s);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    };
+
+    const Storage = {
+      getSongs: () => dbOp(STORE_SONGS, "readonly", s => s.getAll()),
+      saveSong: song => dbOp(STORE_SONGS, "readwrite", s => s.put(song)),
+      deleteSong: id => dbOp(STORE_SONGS, "readwrite", s => s.delete(id)),
+      getPlaylists: () => dbOp(STORE_PLAYLISTS, "readonly", s => s.getAll()),
+      savePlaylist: pl => dbOp(STORE_PLAYLISTS, "readwrite", s => s.put(pl)),
+      deletePlaylist: id => dbOp(STORE_PLAYLISTS, "readwrite", s => s.delete(id))
+    };
+
+    const LS = {
+      get: (k, d) => JSON.parse(localStorage.getItem(k)) || d,
+      set: (k, v) => localStorage.setItem(k, JSON.stringify(v))
+    };
+
+    const fmt = s => {
+      if (!s || isNaN(s)) return "0:00";
+      const m = Math.floor(s / 60);
+      const sec = Math.floor(s % 60);
+      return `${m}:${sec.toString().padStart(2, '0')}`;
+    };
+    const uid = () => Math.random().toString(36).slice(2, 9);
+
+    async function parseMetadata(file) {
+      return new Promise(resolve => {
+        window.jsmediatags.read(file, {
+          onSuccess: tag => {
+            let cover = null;
+            if (tag.tags.picture) {
+              const { data, format } = tag.tags.picture;
+              const base64String = data.reduce((acc, cur) => acc + String.fromCharCode(cur), "");
+              cover = `data:${format};base64,${btoa(base64String)}`;
+            }
+            resolve({
+              title: tag.tags.title || file.name.replace(/\.[^.]+$/, ""),
+              artist: tag.tags.artist || "Unknown Artist",
+              album: tag.tags.album || "Unknown Album",
+              cover
+            });
+          },
+          onError: () => resolve({
+            title: file.name.replace(/\.[^.]+$/, ""),
+            artist: "Unknown Artist",
+            album: "Unknown Album",
+            cover: null
+          })
+        });
+      });
+    }
+
+    /* ── COMPONENTS ── */
+
+    function CoverArt({ src, size = 48, radius = 12, glow = false }) {
+      return (
+        <div style={{
+          width: size, height: size, borderRadius: radius, flexShrink: 0,
+          background: "linear-gradient(135deg, #2a2a35, #1a1a20)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          overflow: "hidden", position: "relative",
+          boxShadow: glow ? `0 10px 20px ${C.acc}66` : "0 4px 10px rgba(0,0,0,0.3)",
+          border: "1px solid rgba(255,255,255,0.05)"
+        }}>
+          {src
+            ? <img src={src} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            : <span style={{ color: C.acc, fontSize: size * 0.4, opacity: 0.5 }}>♪</span>
+          }
+        </div>
+      );
+    }
+
+    function IconButton({ icon, onClick, size = 40, active = false, color = "inherit", style={} }) {
+      return (
+        <button className="btn-press" onClick={onClick} style={{
+          width: size, height: size, borderRadius: "50%", border: "none",
+          background: active ? "rgba(255,255,255,0.1)" : "transparent",
+          color: active ? C.acc : color, display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: size * 0.5, ...style
+        }}>{icon}</button>
+      );
+    }
+
+    /* ── PAGES ── */
+
+    function LibraryPage({ songs, playlists, onPlay, curId, onDelete, onToggleFav, favIds, createPlaylist, updatePlaylist, deletePlaylist, addSongsToPL, removeSongFromPL }) {
+      const [view, setView] = useState("tracks"); // tracks, favs, playlists
+      const [q, setQ] = useState("");
+      const [multiMode, setMultiMode] = useState(false);
+      const [selectedIds, setSelectedIds] = useState(new Set());
+      const [contextMenu, setContextMenu] = useState(null); // { x, y, type, id }
+      const [activePLId, setActivePLId] = useState(null);
+      const [showPLModal, setShowPLModal] = useState(false); // For adding selected to PL
+      const [editPL, setEditPL] = useState(null);
+
+      const activeList = useMemo(() => {
+        if (view === "tracks") return songs;
+        if (view === "favs") return songs.filter(s => favIds.has(s.id));
+        return [];
+      }, [view, songs, favIds]);
+
+      const filtered = activeList.filter(s => s.title.toLowerCase().includes(q.toLowerCase()) || s.artist.toLowerCase().includes(q.toLowerCase()));
+      const activePL = playlists.find(p => p.id === activePLId);
+
+      const handleToggleSelect = (id) => {
+        const n = new Set(selectedIds);
+        n.has(id) ? n.delete(id) : n.add(id);
+        setSelectedIds(n);
+      };
+
+      const handleLongPress = (e, s) => {
+        if (multiMode) return;
+        setContextMenu({ x: e.clientX, y: e.clientY, type: "song", id: s.id });
+      };
+
+      const TrackItem = ({ s, plId }) => {
+        const [pressing, setPressing] = useState(false);
+        const timerRef = useRef(null);
+        const wasLongPress = useRef(false);
+
+        const start = (e) => {
+          if (multiMode) return;
+          wasLongPress.current = false;
+          setPressing(true);
+          const touch = e.touches ? e.touches[0] : e;
+          const { clientX, clientY } = touch;
+          timerRef.current = setTimeout(() => {
+            setPressing(false);
+            wasLongPress.current = true;
+            timerRef.current = null;
+            setContextMenu({ x: clientX, y: clientY, type: plId ? "pl_song" : "song", id: s.id, plId });
+          }, 600);
+        };
+
+        const cancel = () => {
+          if (timerRef.current) clearTimeout(timerRef.current);
+          timerRef.current = null;
+          setPressing(false);
+        };
+
+        const click = (e) => {
+          if (wasLongPress.current) return;
+          if (multiMode) handleToggleSelect(s.id);
+          else onPlay(s);
+        };
+
+        const isSel = selectedIds.has(s.id);
+        return (
+          <div
+            onMouseDown={start} onMouseUp={cancel} onMouseLeave={cancel}
+            onTouchStart={start} onTouchMove={cancel} onTouchEnd={cancel}
+            onClick={click}
+            className="btn-press"
+            style={{
+              display: "flex", alignItems: "center", gap: 14, padding: "12px 16px", borderRadius: 20,
+              background: curId === s.id ? "rgba(233, 69, 96, 0.15)" : isSel ? "rgba(255,255,255,0.08)" : "transparent",
+              transform: pressing ? "scale(0.96)" : "none",
+              border: isSel ? `1px solid ${C.acc}` : "1px solid transparent"
+            }}>
+            {multiMode ? (
+              <div className={`checkbox ${isSel ? 'checked' : ''}`}>{isSel && <span style={{color:"#fff", fontSize:14}}>✓</span>}</div>
+            ) : (
+              <CoverArt src={s.cover} size={50} radius={14} glow={curId === s.id} />
+            )}
+            <div style={{ flex: 1, overflow: "hidden", opacity: multiMode ? (isSel ? 1 : 0.6) : 1 }}>
+              <div style={{ fontSize: 16, fontWeight: 600, color: curId === s.id ? C.acc : "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.title}</div>
+              <div style={{ fontSize: 13, color: C.sub, marginTop: 2 }}>{s.artist}</div>
+            </div>
+            {!multiMode && (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", zIndex: 10 }} onMouseDown={e => e.stopPropagation()} onMouseUp={e => e.stopPropagation()} onTouchStart={e => e.stopPropagation()} onTouchEnd={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
+                <IconButton icon={favIds.has(s.id) ? "❤️" : "🤍"} onClick={() => onToggleFav(s.id)} size={32} active={favIds.has(s.id)} />
+              </div>
+            )}
+          </div>
+        );
+      };
+
+      // Multi-Select Actions
+      const deleteSelected = () => {
+        if (!confirm(`Delete ${selectedIds.size} songs?`)) return;
+        selectedIds.forEach(id => onDelete(id));
+        setMultiMode(false); setSelectedIds(new Set());
+      };
+
+      if (activePLId && activePL) {
+        const plSongs = activePL.songIds.map(id => songs.find(s => s.id === id)).filter(Boolean);
+        return (
+          <div style={{ padding: "20px 20px 100px", animation: "slideUp 0.3s ease", height: "100%", overflowY: "auto" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
+              <IconButton icon="←" onClick={() => setActivePLId(null)} style={{background:"rgba(255,255,255,0.1)"}} />
+              <div style={{flex:1}}>
+                <h2 style={{ fontSize: 24, fontWeight: 800 }}>{activePL.name}</h2>
+                <div style={{fontSize:13, color:C.sub}}>{plSongs.length} tracks</div>
+              </div>
+              <IconButton icon="✏️" onClick={() => setEditPL(activePL)} size={36} />
+            </div>
+            
+            <div style={{display:"flex", justifyContent:"center", marginBottom:30}}>
+              <CoverArt src={activePL.cover} size={160} radius={20} glow />
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {plSongs.map(s => <TrackItem key={s.id} s={s} plId={activePL.id} />)}
+            </div>
+
+            {contextMenu && contextMenu.type === "pl_song" && (
+              <div onClick={() => setContextMenu(null)} style={{ position: "fixed", inset: 0, zIndex: 1000 }}>
+                <div className="glass" style={{
+                  position: "absolute", left: Math.min(contextMenu.x, window.innerWidth - 180), top: Math.min(contextMenu.y, window.innerHeight - 100),
+                  padding: 8, borderRadius: 16, width: 180, display: "flex", flexDirection: "column", gap: 4,
+                  boxShadow: "0 10px 30px rgba(0,0,0,0.5)"
+                }}>
+                  <button className="btn-press" onClick={() => { removeSongFromPL(contextMenu.plId, contextMenu.id); setContextMenu(null); }} style={{ padding: 12, background: "transparent", color: "#fff", border: "none", textAlign: "left", borderRadius: 8 }}>Remove from Playlist</button>
+                  <button className="btn-press" onClick={() => { onPlay(songs.find(s=>s.id===contextMenu.id)); setContextMenu(null); }} style={{ padding: 12, background: "transparent", color: "#fff", border: "none", textAlign: "left", borderRadius: 8 }}>Play Now</button>
+                </div>
+              </div>
+            )}
+
+            {editPL && (
+              <div onClick={() => setEditPL(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <div onClick={e => e.stopPropagation()} className="glass" style={{ width: "85%", borderRadius: 24, padding: 24 }}>
+                  <h3 style={{ marginBottom: 16 }}>Edit Playlist</h3>
+                  <input value={editPL.name} onChange={e => setEditPL({...editPL, name: e.target.value})} style={{ width: "100%", padding: 12, background: "rgba(0,0,0,0.5)", border: "none", color: "#fff", borderRadius: 12, marginBottom: 16, outline:"none" }} />
+                  <label style={{ display: "block", background: "rgba(255,255,255,0.1)", padding: 12, borderRadius: 12, textAlign: "center", marginBottom: 20 }}>
+                    Change Cover Image
+                    <input type="file" accept="image/*" style={{display:"none"}} onChange={e => {
+                      if(e.target.files[0]){
+                        const reader = new FileReader();
+                        reader.onload = ev => setEditPL({...editPL, cover: ev.target.result});
+                        reader.readAsDataURL(e.target.files[0]);
+                      }
+                    }} />
+                  </label>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <button onClick={() => { updatePlaylist(editPL); setEditPL(null); }} style={{ flex: 1, padding: 12, borderRadius: 12, background: C.acc, color: "#fff", border: "none", fontWeight:"bold" }}>Save</button>
+                    <button onClick={() => setEditPL(null)} style={{ padding: 12, borderRadius: 12, background: C.card, color: "#fff", border: "none" }}>Cancel</button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      return (
+        <div style={{ padding: "20px 20px 100px", animation: "fadeIn 0.4s ease", height: "100%", overflowY: "auto" }}>
+          <div style={{ marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h1 style={{ fontSize: 32, fontWeight: 800, fontFamily: 'Outfit', color: "#fff", textShadow: `0 0 20px ${C.acc}` }}>GutsPlayer</h1>
+            <IconButton icon={multiMode ? "Cancel" : "✓"} onClick={() => { setMultiMode(!multiMode); setSelectedIds(new Set()); }} size={40} style={{fontSize: multiMode ? 14 : 18, background: multiMode ? "rgba(255,255,255,0.2)" : "transparent"}} />
+          </div>
+
+          {!multiMode && (
+            <div style={{ display: "flex", gap: 8, marginBottom: 20, overflowX: "auto", paddingBottom: 4 }}>
+              <button className="tab-btn" style={{ background: view === "tracks" ? C.acc : C.card, color: "#fff" }} onClick={() => setView("tracks")}>Tracks</button>
+              <button className="tab-btn" style={{ background: view === "favs" ? C.acc : C.card, color: "#fff" }} onClick={() => setView("favs")}>Favorites</button>
+              <button className="tab-btn" style={{ background: view === "playlists" ? C.acc : C.card, color: "#fff" }} onClick={() => setView("playlists")}>Playlists</button>
+            </div>
+          )}
+
+          {multiMode && (
+            <div className="glass" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderRadius: 16, marginBottom: 16 }}>
+              <span style={{ fontWeight: "bold" }}>{selectedIds.size} Selected</span>
+              <div style={{ display: "flex", gap: 10 }}>
+                <IconButton icon="📁" onClick={() => selectedIds.size > 0 && setShowPLModal(true)} size={36} style={{background:"rgba(255,255,255,0.1)"}} />
+                <IconButton icon="🗑" onClick={() => selectedIds.size > 0 && deleteSelected()} size={36} color="#f55" style={{background:"rgba(255,0,0,0.1)"}} />
+              </div>
+            </div>
+          )}
+
+          {view !== "playlists" && (
+            <>
+              {!multiMode && (
+                <div style={{ position: "relative", marginBottom: 24 }}>
+                  <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search tracks..."
+                    style={{ width: "100%", padding: "14px 20px", borderRadius: 20, border: "none", background: "rgba(255,255,255,0.06)", color: "#fff", fontSize: 15, outline: "none", backdropFilter:"blur(10px)" }} />
+                </div>
+              )}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {filtered.map(s => <TrackItem key={s.id} s={s} />)}
+                {filtered.length === 0 && <div style={{ textAlign: "center", padding: "60px 20px", color: C.muted }}>Empty.</div>}
+              </div>
+            </>
+          )}
+
+          {view === "playlists" && !multiMode && (
+            <div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                <div onClick={() => { const n = prompt("Playlist Name"); if(n) createPlaylist(n); }} className="btn-press glass" style={{ padding: 20, borderRadius: 24, minHeight: 140, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", border: `1px dashed ${C.acc}` }}>
+                  <span style={{ fontSize: 32, color: C.acc, marginBottom: 8 }}>+</span>
+                  <span style={{ fontWeight: 600 }}>New Playlist</span>
+                </div>
+                {playlists.map(p => (
+                  <div key={p.id} onClick={() => setActivePLId(p.id)} className="btn-press glass" style={{ padding: 16, borderRadius: 24, minHeight: 140, display: "flex", flexDirection: "column", justifyContent: "flex-end", position: "relative", overflow:"hidden" }}>
+                    {p.cover && <img src={p.cover} style={{position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", opacity:0.4, zIndex:-1}} />}
+                    <div style={{ position: "absolute", top: 12, right: 12, zIndex:2 }}>
+                      <IconButton icon="🗑" onClick={(e) => { e.stopPropagation(); if(confirm("Delete playlist?")) deletePlaylist(p.id); }} size={28} color="#f55" />
+                    </div>
+                    <div style={{ zIndex:2 }}>
+                      <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 4 }}>{p.name}</div>
+                      <div style={{ fontSize: 12, color: C.sub }}>{p.songIds.length} tracks</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Context Menu for long press */}
+          {contextMenu && contextMenu.type === "song" && (
+            <div onClick={() => setContextMenu(null)} style={{ position: "fixed", inset: 0, zIndex: 1000 }}>
+              <div className="glass" style={{
+                position: "absolute", left: Math.min(contextMenu.x, window.innerWidth - 180), top: Math.min(contextMenu.y, window.innerHeight - 150),
+                padding: 8, borderRadius: 16, width: 180, display: "flex", flexDirection: "column", gap: 4,
+                boxShadow: "0 10px 30px rgba(0,0,0,0.5)"
+              }}>
+                <button className="btn-press" onClick={() => { setMultiMode(true); setSelectedIds(new Set([contextMenu.id])); setContextMenu(null); }} style={{ padding: 12, background: "transparent", color: "#fff", border: "none", textAlign: "left", borderRadius: 8 }}>Select Multiple</button>
+                <button className="btn-press" onClick={() => { setSelectedIds(new Set([contextMenu.id])); setShowPLModal(true); setContextMenu(null); }} style={{ padding: 12, background: "transparent", color: "#fff", border: "none", textAlign: "left", borderRadius: 8 }}>Add to Playlist</button>
+                <button className="btn-press" onClick={() => { onDelete(contextMenu.id); setContextMenu(null); }} style={{ padding: 12, background: "transparent", color: "#f55", border: "none", textAlign: "left", borderRadius: 8 }}>Delete</button>
+              </div>
+            </div>
+          )}
+
+          {/* Add to Playlist Modal */}
+          {showPLModal && (
+            <div onClick={() => { setShowPLModal(false); if(!multiMode) setSelectedIds(new Set()); }} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 1100, display: "flex", alignItems: "flex-end" }}>
+              <div onClick={e => e.stopPropagation()} className="glass" style={{ width: "100%", borderRadius: "32px 32px 0 0", padding: 30, animation: "slideUp 0.3s ease" }}>
+                <h3 style={{ marginBottom: 20 }}>Add {selectedIds.size} tracks to Playlist</h3>
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {playlists.map(p => (
+                    <div key={p.id} onClick={() => { addSongsToPL(p.id, Array.from(selectedIds)); setShowPLModal(false); if(!multiMode) setSelectedIds(new Set()); }} className="btn-press" style={{ padding: 16, background: "rgba(255,255,255,0.1)", borderRadius: 16, fontSize: 16, fontWeight: 600 }}>{p.name}</div>
+                  ))}
+                  <div onClick={() => { const n = prompt("Playlist Name"); if (n) { createPlaylist(n).then(pl => addSongsToPL(pl.id, Array.from(selectedIds))); setShowPLModal(false); } }} className="btn-press" style={{ padding: 16, background: "transparent", border: `1px solid ${C.acc}`, borderRadius: 16, color: C.acc, textAlign: "center", fontWeight: 700 }}>+ Create New Playlist</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    /* ── MAIN APP ── */
+
+    function GutsPlayer() {
+      const [songs, setSongs] = useState([]);
+      const [playlists, setPlaylists] = useState([]);
+      const [favIds, setFavIds] = useState(new Set(LS.get("favs", [])));
+      const [cur, setCur] = useState(null);
+      const [playing, setPlaying] = useState(false);
+      const [tab, setTab] = useState("library");
+      const [showNP, setShowNP] = useState(false);
+      const [progress, setProgress] = useState(0);
+      const [volume, setVolume] = useState(0.8);
+      const [showMenu, setShowMenu] = useState(false);
+
+      const audioRef = useRef(new Audio());
+      const npRef = useRef(null);
+      const npTouchStart = useRef(0);
+
+      useEffect(() => {
+        Storage.getSongs().then(s => {
+          const loaded = s.map(song => ({ ...song, url: song.blob ? URL.createObjectURL(song.blob) : null }));
+          setSongs(loaded);
+        });
+        Storage.getPlaylists().then(setPlaylists);
+      }, []);
+
+      useEffect(() => { LS.set("favs", [...favIds]); }, [favIds]);
+
+      const toggleFav = (id) => setFavIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+      const createPlaylist = async (name) => {
+        if (!name.trim()) return;
+        const pl = { id: uid(), name, songIds: [], cover: null };
+        await Storage.savePlaylist(pl);
+        setPlaylists(prev => [...prev, pl]);
+        return pl;
+      };
+      
+      const updatePlaylist = async (pl) => {
+        await Storage.savePlaylist(pl);
+        setPlaylists(prev => prev.map(p => p.id === pl.id ? pl : p));
+      };
+
+      const deletePlaylist = async (id) => {
+        await Storage.deletePlaylist(id);
+        setPlaylists(prev => prev.filter(p => p.id !== id));
+      };
+
+      const addSongsToPL = async (plId, sIds) => {
+        const pl = playlists.find(p => p.id === plId);
+        if (!pl) return;
+        const newIds = sIds.filter(id => !pl.songIds.includes(id));
+        if(newIds.length === 0) return;
+        const updated = { ...pl, songIds: [...pl.songIds, ...newIds] };
+        await Storage.savePlaylist(updated);
+        setPlaylists(prev => prev.map(p => p.id === plId ? updated : p));
+      };
+
+      const removeSongFromPL = async (plId, sId) => {
+        const pl = playlists.find(p => p.id === plId);
+        if (!pl) return;
+        const updated = { ...pl, songIds: pl.songIds.filter(id => id !== sId) };
+        await Storage.savePlaylist(updated);
+        setPlaylists(prev => prev.map(p => p.id === plId ? updated : p));
+      };
+
+      const addFiles = async (files) => {
+        if (!files || files.length === 0) return;
+        const audioFiles = Array.from(files).filter(f => f.type.startsWith("audio/"));
+        for (const f of audioFiles) {
+          const meta = await parseMetadata(f);
+          const song = { id: uid(), ...meta, blob: f, duration: 0, added: Date.now() };
+          const tempAudio = new Audio(URL.createObjectURL(f));
+          tempAudio.onloadedmetadata = async () => {
+            song.duration = tempAudio.duration;
+            await Storage.saveSong(song);
+            setSongs(prev => [...prev, { ...song, url: tempAudio.src }]);
+          };
+        }
+        setShowMenu(false);
+      };
+
+      const play = (song) => {
+        const a = audioRef.current;
+        if (cur?.id === song.id) { setShowNP(true); return; }
+        a.src = song.url;
+        a.play();
+        setCur(song); setPlaying(true); setShowNP(true);
+      };
+
+      const playNext = useCallback(() => {
+        if(!songs.length || !cur) return;
+        const idx = songs.findIndex(s => s.id === cur.id);
+        if(idx !== -1 && idx < songs.length - 1) play(songs[idx + 1]);
+        else if(songs.length > 0) play(songs[0]);
+      }, [songs, cur]);
+
+      const playPrev = useCallback(() => {
+        if(!songs.length || !cur) return;
+        const idx = songs.findIndex(s => s.id === cur.id);
+        if(idx > 0) play(songs[idx - 1]);
+        else if(songs.length > 0) play(songs[songs.length - 1]);
+      }, [songs, cur]);
+
+      useEffect(() => {
+        const a = audioRef.current;
+        const upd = () => setProgress(a.currentTime / a.duration || 0);
+        const ended = () => {
+          const idx = songs.findIndex(s => s.id === cur?.id);
+          if (idx !== -1 && idx < songs.length - 1) play(songs[idx + 1]);
+          else setPlaying(false);
+        };
+        a.addEventListener("timeupdate", upd); a.addEventListener("ended", ended);
+        return () => { a.removeEventListener("timeupdate", upd); a.removeEventListener("ended", ended); };
+      }, [cur, songs]);
+
+      const toggle = () => { const a = audioRef.current; if (a.paused) a.play(); else a.pause(); setPlaying(!a.paused); };
+
+      const deleteSong = async (id) => {
+        await Storage.deleteSong(id);
+        setSongs(prev => prev.filter(s => s.id !== id));
+        if (cur?.id === id) { audioRef.current.pause(); setCur(null); setPlaying(false); }
+      };
+
+      return (
+        <div style={{ height: "100%", display: "flex", flexDirection: "column", position: "relative" }}>
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            {tab === "library" && <LibraryPage songs={songs} playlists={playlists} onPlay={play} curId={cur?.id} onDelete={deleteSong} onToggleFav={toggleFav} favIds={favIds} createPlaylist={createPlaylist} updatePlaylist={updatePlaylist} deletePlaylist={deletePlaylist} addSongsToPL={addSongsToPL} removeSongFromPL={removeSongFromPL} />}
+            {tab === "settings" && (
+              <div style={{ padding: "40px 20px", animation: "fadeIn 0.3s ease", color: "#fff" }}>
+                <h2 style={{ fontSize: 28, fontWeight: 800, marginBottom: 20 }}>Settings</h2>
+                <div className="glass" style={{ padding: 20, borderRadius: 20, marginBottom: 16 }}>
+                  <p style={{ color: C.sub, marginBottom: 8, fontSize: 13, textTransform: "uppercase", letterSpacing: 1, fontWeight: "bold" }}>General</p>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                    <span style={{ fontWeight: 500 }}>Clear Library Data</span>
+                    <button className="btn-press" onClick={() => { if(confirm("Are you sure? This will delete all songs and playlists!")) { indexedDB.deleteDatabase(DB_NAME); localStorage.clear(); window.location.reload(); } }} style={{ padding: "8px 16px", borderRadius: 12, background: "rgba(233, 69, 96, 0.2)", color: C.acc, border: `1px solid ${C.acc}`, fontWeight: "bold" }}>Clear</button>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0" }}>
+                    <span style={{ fontWeight: 500 }}>App Version</span>
+                    <span style={{ color: C.sub, fontWeight: "bold" }}>1.0.0</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Mini Player */}
+          {cur && !showNP && (
+            <div onClick={() => setShowNP(true)} className="glass" style={{
+              position: "fixed", bottom: 84, left: 12, right: 12, height: 70, borderRadius: 24,
+              display: "flex", alignItems: "center", padding: "0 16px", gap: 12, zIndex: 10,
+              boxShadow: "0 10px 40px rgba(0,0,0,0.5)", border: `1px solid ${C.acc}40`
+            }}>
+              <CoverArt src={cur.cover} size={48} radius={14} />
+              <div style={{ flex: 1, overflow: "hidden" }}>
+                <div style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{cur.title}</div>
+                <div style={{ fontSize: 13, color: C.sub }}>{cur.artist}</div>
+              </div>
+              <IconButton icon={playing ? "⏸" : "▶"} onClick={e => { e.stopPropagation(); toggle(); }} size={44} active />
+            </div>
+          )}
+
+          {/* Nav Bar */}
+          <div className="glass" style={{ height: 76, display: "flex", alignItems: "center", justifyContent: "space-around", borderTop: "1px solid rgba(255,255,255,0.05)", paddingBottom: 6 }}>
+            <IconButton icon="🎶" active={tab === "library"} onClick={() => setTab("library")} />
+            <div onClick={() => setShowMenu(true)} style={{
+              width: 56, height: 56, borderRadius: 22, background: C.acc,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 28, boxShadow: `0 10px 25px ${C.acc}80`, marginTop: -36, color: "#fff", cursor: "pointer"
+            }}>+</div>
+            <IconButton icon="⚙️" active={tab === "settings"} onClick={() => setTab("settings")} />
+          </div>
+
+          {/* Add Menu */}
+          {showMenu && (
+            <div onClick={() => setShowMenu(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, animation: "fadeIn 0.2s ease" }}>
+              <div onClick={e => e.stopPropagation()} className="glass" style={{ width: "80%", maxWidth: 300, borderRadius: 24, padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
+                <h3 style={{ textAlign: "center", marginBottom: 8 }}>Import Music</h3>
+                <label className="btn-press" style={{ display: "flex", alignItems: "center", gap: 12, padding: 16, background: "rgba(255,255,255,0.1)", borderRadius: 16 }}>
+                  <span>📁</span> Select Files
+                  <input type="file" multiple accept="audio/*" style={{ display: "none" }} onChange={e => addFiles(e.target.files)} />
+                </label>
+                <label className="btn-press" style={{ display: "flex", alignItems: "center", gap: 12, padding: 16, background: "rgba(255,255,255,0.1)", borderRadius: 16 }}>
+                  <span>📂</span> Select Folder
+                  <input type="file" multiple webkitdirectory="true" directory="true" style={{ display: "none" }} onChange={e => addFiles(e.target.files)} />
+                </label>
+              </div>
+            </div>
+          )}
+
+          {/* Now Playing Full Screen */}
+          <div
+            ref={npRef}
+            onTouchStart={e => {
+              npTouchStart.current = e.touches[0].clientY;
+              if (npRef.current) npRef.current.style.transition = "none";
+            }}
+            onTouchMove={e => {
+              if (!showNP || !npRef.current) return;
+              const dy = e.touches[0].clientY - npTouchStart.current;
+              if (dy > 0) {
+                npRef.current.style.transform = `translateY(${dy}px)`;
+                npRef.current.style.opacity = 1 - (dy / (window.innerHeight || 800));
+              }
+            }}
+            onTouchEnd={e => {
+              if (!showNP || !npRef.current) return;
+              const dy = e.changedTouches[0].clientY - npTouchStart.current;
+              if (dy > 150) {
+                setShowNP(false);
+              } else {
+                npRef.current.style.transition = "transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.4s";
+                npRef.current.style.transform = "translateY(0px)";
+                npRef.current.style.opacity = 1;
+              }
+            }}
+            onWheel={e => { if (e.deltaY > 50) setShowNP(false); }}
+            style={{ 
+              position: "fixed", inset: 0, background: C.bg, zIndex: 200, display: "flex", flexDirection: "column", padding: "40px 30px", 
+              transform: showNP ? "translateY(0)" : "translateY(100vh)",
+              opacity: showNP ? 1 : 0,
+              transition: "transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.4s",
+              pointerEvents: showNP ? "auto" : "none"
+            }}>
+            {cur && (
+              <>
+              <div className="now-playing-bg" style={{ backgroundImage: cur?.cover ? `url(${cur.cover})` : "none" }} />
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 30 }}>
+                <IconButton icon="˅" onClick={() => setShowNP(false)} size={48} style={{fontSize: 24}} />
+                <div style={{ fontSize: 12, fontWeight: 800, color: "rgba(255,255,255,0.7)", letterSpacing: 2 }}>NOW PLAYING</div>
+                <IconButton icon="❤️" active={favIds.has(cur.id)} onClick={() => toggleFav(cur.id)} size={48} />
+              </div>
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <div style={{ width: "80vw", height: "80vw", maxWidth: 320, maxHeight: 320, borderRadius: 40, overflow: "hidden", boxShadow: `0 40px 80px rgba(0,0,0,0.6), 0 0 40px ${C.acc}40`, border: "1px solid rgba(255,255,255,0.1)" }}>
+                  {cur?.cover ? <img src={cur.cover} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <div style={{ width: "100%", height: "100%", background: "#111", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 80 }}>♪</div>}
+                </div>
+              </div>
+              <div style={{ marginTop: 40, padding: "0 10px" }}>
+                <h2 style={{ fontSize: 28, fontWeight: 800, marginBottom: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{cur?.title}</h2>
+                <p style={{ fontSize: 18, color: C.sub }}>{cur?.artist}</p>
+                <div style={{ position: "relative", height: 6, background: "rgba(255,255,255,0.1)", borderRadius: 3, marginTop: 34, marginBottom: 14 }}>
+                  <div style={{ height: "100%", width: `${progress * 100}%`, background: C.acc, borderRadius: 3, position: "relative", pointerEvents: "none" }}>
+                    <div style={{ position: "absolute", right: -8, top: -5, width: 16, height: 16, borderRadius: "50%", background: "#fff", boxShadow: "0 0 10px #fff" }} />
+                  </div>
+                  <input 
+                    type="range" 
+                    min="0" max="1" step="0.001" 
+                    value={progress || 0}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      if (audioRef.current && audioRef.current.duration) {
+                        audioRef.current.currentTime = val * audioRef.current.duration;
+                        setProgress(val);
+                      }
+                    }}
+                    style={{ position: "absolute", top: -10, left: 0, width: "100%", height: 26, opacity: 0, margin: 0, cursor: "pointer" }} 
+                  />
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.sub, fontWeight: 600 }}>
+                  <span>{fmt(audioRef.current.currentTime)}</span><span>{fmt(audioRef.current.duration)}</span>
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-around", marginTop: 30, marginBottom: 20 }}>
+                <IconButton icon="⏮" onClick={playPrev} size={60} style={{fontSize:24}} />
+                <div onClick={toggle} className="btn-press" style={{ width: 84, height: 84, borderRadius: "50%", background: C.acc, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32, boxShadow: `0 15px 40px ${C.acc}66` }}>{playing ? "⏸" : "▶"}</div>
+                <IconButton icon="⏭" onClick={playNext} size={60} style={{fontSize:24}} />
+              </div>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<GutsPlayer />);
+  </script>
+</body>
+
+</html>
