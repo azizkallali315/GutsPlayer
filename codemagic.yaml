@@ -10,14 +10,17 @@ workflows:
         script: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/local.properties"
 
-      - name: Make gradlew executable
+      - name: Install Gradle
         script: |
-          find . -name "gradlew" | head -1 | xargs chmod +x
-          ls -la gradlew
+          curl -L https://services.gradle.org/distributions/gradle-8.0-bin.zip -o gradle.zip
+          unzip -q gradle.zip -d /home/builder/gradle
+          export PATH=$PATH:/home/builder/gradle/gradle-8.0/bin
+          gradle --version
 
       - name: Build debug APK
         script: |
-          ./gradlew assembleDebug --stacktrace
+          export PATH=$PATH:/home/builder/gradle/gradle-8.0/bin
+          gradle assembleDebug --stacktrace --project-dir .
 
     artifacts:
       - app/build/outputs/apk/debug/app-debug.apk
