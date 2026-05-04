@@ -1,6 +1,6 @@
 workflows:
   android-workflow:
-    name: GutsPlayer Android Build
+    name: GutsPlayer
     max_build_duration: 30
     environment:
       java: 17
@@ -25,7 +25,7 @@ workflows:
     publishing:
       email:
         recipients:
-          - your@email.com        # ← change this to your email
+          - med.aziz.gallali@gmail.com        # ← change this to your email
         notify:
           success: true
           failure: true
