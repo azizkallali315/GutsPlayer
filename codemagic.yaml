@@ -1,0 +1,31 @@
+workflows:
+  android-workflow:
+    name: GutsPlayer Android Build
+    max_build_duration: 30
+    environment:
+      java: 17
+
+    scripts:
+      - name: Set up local.properties
+        script: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/local.properties"
+
+      - name: Make gradlew executable
+        script: |
+          find . -name "gradlew" | head -1 | xargs chmod +x
+          ls -la gradlew
+
+      - name: Build debug APK
+        script: |
+          ./gradlew assembleDebug --stacktrace
+
+    artifacts:
+      - app/build/outputs/apk/debug/app-debug.apk
+
+    publishing:
+      email:
+        recipients:
+          - your@email.com        # ← change this to your email
+        notify:
+          success: true
+          failure: true
